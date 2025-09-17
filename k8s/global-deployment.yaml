@@ -1,0 +1,50 @@
+# File: k8s/global-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: global-aggregator
+  labels:
+    app: global-aggregator
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: global-aggregator
+  template:
+    metadata:
+      labels:
+        app: global-aggregator
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+    spec:
+      containers:
+        - name: global
+          image: registry.example.com/fedgnn/global:latest
+          env:
+            - name: KAFKA_BOOTSTRAP
+              value: "kafka:9092"
+            - name: KAFKA_TOPIC
+              value: "updates"
+            - name: MODEL_STORE_PATH
+              value: "/data/models"
+          ports:
+            - containerPort: 9100
+          volumeMounts:
+            - name: model-store
+              mountPath: /data/models
+      volumes:
+        - name: model-store
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: global-aggregator
+spec:
+  selector:
+    app: global-aggregator
+  ports:
+    - protocol: TCP
+      port: 9100
+      targetPort: 9100

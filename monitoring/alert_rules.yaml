@@ -1,0 +1,38 @@
+groups:
+- name: fedgnn-alerts
+  rules:
+  - alert: HMACFailureRateHigh
+    expr: rate(fedgnn_hmac_failures_total[5m]) > 5
+    for: 2m
+    labels:
+      severity: warning
+    annotations:
+      summary: "High rate of HMAC failures"
+      description: "The rate of HMAC verification failures is high, which may indicate attack attempts."
+
+  - alert: ShamirReconstructionFailed
+    expr: increase(fedgnn_shamir_failures_total[1h]) > 0
+    for: 0m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Shamir reconstruction failure"
+      description: "Shamir secret reconstruction has failed, which may indicate protocol violations."
+
+  - alert: DPEpsilonExceeded
+    expr: fedgnn_dp_epsilon > 10
+    for: 0m
+    labels:
+      severity: critical
+    annotations:
+      summary: "DP epsilon threshold exceeded"
+      description: "The differential privacy epsilon value has exceeded the safe threshold."
+
+  - alert: RoundDurationHigh
+    expr: fedgnn_round_duration_seconds > 30
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Round processing time high"
+      description: "Federated learning rounds are taking longer than expected to process."

@@ -1,0 +1,22 @@
+[package]
+name = "fed_crypto"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <you@example.com>"]
+
+[lib]
+name = "fed_crypto"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = ">=0.18.3, <0.20", features = ["extension-module"] }
+ndarray = "0.15"
+numpy = "0.18"
+rand = "0.8"
+hmac = "0.12"
+sha2 = "0.10"
+num-bigint = "0.4"
+num-traits = "0.2"
+
+[features]
+default = []

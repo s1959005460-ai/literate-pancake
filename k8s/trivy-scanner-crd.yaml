@@ -1,0 +1,16 @@
+# Example Trivy Operator CRD to schedule image scanning (simplified)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: trivy-operator-clusterrolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trivy-operator
+subjects:
+  - kind: ServiceAccount
+    name: trivy-operator
+    namespace: trivy-system
+---
+# Note: Real Trivy Operator requires helm chart installation.
+# This file is an example placeholder for operator RBAC.

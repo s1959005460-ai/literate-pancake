@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fedgnn-orchestrator
+  labels:
+    app: fedgnn
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fedgnn
+  template:
+    metadata:
+      labels:
+        app: fedgnn
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+    spec:
+      containers:
+      - name: orchestrator
+        image: your-registry/fedgnn-advanced:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: AUDIT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: fedgnn-secrets
+              key: audit-secret
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fedgnn-service
+spec:
+  selector:
+    app: fedgnn
+  ports:
+  - port: 8000
+    targetPort: 8000

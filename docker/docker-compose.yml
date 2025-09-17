@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  fedgnn-orchestrator:
+    build: .
+    environment:
+      - AUDIT_SECRET=${AUDIT_SECRET}
+      - PYTHONPATH=/app
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  # Example: Add Prometheus for monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:

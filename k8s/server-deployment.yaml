@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fedgnn-server
+  namespace: fedgnn-prod
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: fedgnn-server
+  template:
+    metadata:
+      labels:
+        app: fedgnn-server
+    spec:
+      serviceAccountName: fedgnn-server-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 2000
+        fsGroup: 2000
+      containers:
+        - name: server
+          image: registry.example.com/fedgnn/server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: FEDGNN_LOG_LEVEL
+              value: "INFO"
+            - name: FEDGNN_ALLOW_PRIVATE_SERIALIZE
+              value: "false"
+      tolerations:
+        - key: "node-role.kubernetes.io/control-plane"
+          operator: "Exists"
+          effect: "NoSchedule"

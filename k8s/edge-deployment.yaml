@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge-aggregator
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: edge-aggregator
+  template:
+    metadata:
+      labels:
+        app: edge-aggregator
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+    spec:
+      containers:
+        - name: edge
+          image: registry.example.com/fedgnn/edge:latest
+          env:
+            - name: KAFKA_BOOTSTRAP
+              value: "kafka:9092"
+            - name: REDIS_URL
+              value: "redis://redis:6379/0"
+            - name: SERVER_PRIV_KEY_PATH
+              value: "/secrets/server_x25519_priv.bin"
+          ports:
+            - containerPort: 50051
+            - containerPort: 8080
+          volumeMounts:
+            - name: server-secret
+              mountPath: /secrets
+              readOnly: true
+      volumes:
+        - name: server-secret
+          secret:
+            secretName: edge-server-keys
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: edge-aggregator
+spec:
+  selector:
+    app: edge-aggregator
+  ports:
+    - protocol: TCP
+      port: 50051
+      targetPort: 50051

@@ -1,0 +1,41 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "fedgnn-dashboard",
+    "title": "FedGNN Overview",
+    "timezone": "browser",
+    "panels": [
+      {
+        "type": "graph",
+        "title": "DP Epsilon over time",
+        "targets": [
+          {
+            "expr": "fedgnn_dp_epsilon_current",
+            "legendFormat": "{{instance}}"
+          }
+        ],
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 6}
+      },
+      {
+        "type": "stat",
+        "title": "HMAC Failures (last 5m)",
+        "targets": [{"expr": "increase(fedgnn_hmac_failures_total[5m])"}],
+        "gridPos": {"x": 12, "y": 0, "w": 6, "h": 3}
+      },
+      {
+        "type": "graph",
+        "title": "Client Dropout Rate",
+        "targets": [{"expr": "fedgnn_client_dropout_rate"}],
+        "gridPos": {"x": 0, "y": 6, "w": 12, "h": 4}
+      },
+      {
+        "type": "graph",
+        "title": "Unmask Failures",
+        "targets": [{"expr": "increase(fedgnn_unmask_failures_total[5m])"}],
+        "gridPos": {"x": 12, "y": 3, "w": 6, "h": 3}
+      }
+    ],
+    "schemaVersion": 27,
+    "version": 1
+  }
+}

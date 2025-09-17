@@ -1,0 +1,24 @@
+groups:
+- name: fedgnn.rules
+  rules:
+  - alert: FedGNN_Deserialization_Rejections
+    expr: increase(fedgnn_deserialization_rejects_total[5m]) > 0
+    for: 2m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Deserialization rejects observed"
+  - alert: FedGNN_MAC_Failures
+    expr: increase(fedgnn_bonawitz_mac_validations_total[5m]) == 0
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "No MAC validations in last 5m - investigate"
+  - alert: FedGNN_DP_Epsilon_Exceeded
+    expr: fedgnn_dp_epsilon_current > 8
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "DP epsilon exceeded threshold"

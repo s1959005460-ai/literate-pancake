@@ -1,0 +1,25 @@
+# 文件: k8s/ingress-nginx.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fedgnn-ingress
+  namespace: fedgnn-prod
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"        # request size limit
+    nginx.ingress.kubernetes.io/enable-rate-limiting: "true"
+    nginx.ingress.kubernetes.io/rate-limit-zone: "fedgnnzone $binary_remote_addr 10m"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+spec:
+  rules:
+  - host: fedgnn.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: fedgnn-server
+            port:
+              number: 8080

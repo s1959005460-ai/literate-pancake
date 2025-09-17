@@ -1,0 +1,21 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "FedGNN Overview",
+    "panels": [
+      {
+        "type": "graph",
+        "title": "DP Epsilon",
+        "targets": [{"expr": "fedgnn_dp_epsilon_current"}],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+      },
+      {
+        "type": "graph",
+        "title": "Deserialization Rejects",
+        "targets": [{"expr": "increase(fedgnn_deserialization_rejects_total[5m])"}],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      }
+    ],
+    "schemaVersion": 30
+  }
+}
