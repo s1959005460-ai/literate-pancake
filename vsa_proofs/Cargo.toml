@@ -1,0 +1,9 @@
+[package]
+name = "vsa_proofs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bellman = "0.14"
+bls12_381 = "0.4"
+rand = "0.8"

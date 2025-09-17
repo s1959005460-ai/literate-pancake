@@ -1,0 +1,754 @@
+*** Begin Patch
+*** Add File: FedGNN_advanced/constants.py
++"""
++constants.py
++
++Single source of numeric/format/string defaults used across the project.
++Avoid magic numbers in code: read them from DEFAULTS and/or named constants.
++"""
++
++from typing import Any, Dict
++
++DEFAULTS: Dict[str, Any] = {
++    # RNG / seed handling
++    "DEFAULT_SEED": 42,
++    "SEED_BYTE_LEN": 32,  # bytes for master seed
++
++    # Shamir secret sharing
++    "SHAMIR_PRIME": 170141183460469231731687303715884105727,  # 2**127 - 1 (example prime)
++    "SHAMIR_THRESHOLD_FRACTION": 0.5,  # fraction of total clients used as threshold (ceil(n * frac))
++
++    # Mask / PRG defaults
++    "MASK_SCALE": 1e-3,
++    "PRG_HASH": "sha256",
++
++    # Aggregation defensive thresholds
++    "AGG_MIN_TOTAL_WEIGHT": 1e-8,
++
++    # Network / Async timeouts (seconds)
++    "DEFAULT_INBOX_DRAIN_TIMEOUT": 0.01,
++    "DEFAULT_UNMASK_REQUEST_TIMEOUT": 1.0,
++
++    # Compression / bytes
++    "DEFAULT_COMPRESSION_CHUNK": 1024 * 16,
++
++    # Evaluation / misc
++    "DEFAULT_DEVICE": "cpu",
++
++    # Test / demo specific constants
++    "TEST_BONAWITZ_THRESHOLD": 0.6,
++}
++
++# Convenience named constants (for direct import)
++SEED_BYTE_LEN = int(DEFAULTS["SEED_BYTE_LEN"])
++SHAMIR_PRIME = int(DEFAULTS["SHAMIR_PRIME"])
++SHAMIR_THRESHOLD_FRACTION = float(DEFAULTS["SHAMIR_THRESHOLD_FRACTION"])
++MASK_SCALE = float(DEFAULTS["MASK_SCALE"])
++PRG_HASH = str(DEFAULTS["PRG_HASH"])
++DEFAULT_INBOX_DRAIN_TIMEOUT = float(DEFAULTS["DEFAULT_INBOX_DRAIN_TIMEOUT"])
++DEFAULT_UNMASK_REQUEST_TIMEOUT = float(DEFAULTS["DEFAULT_UNMASK_REQUEST_TIMEOUT"])
++AGG_MIN_TOTAL_WEIGHT = float(DEFAULTS["AGG_MIN_TOTAL_WEIGHT"])
++DEFAULT_COMPRESSION_CHUNK = int(DEFAULTS["DEFAULT_COMPRESSION_CHUNK"])
++DEFAULT_DEVICE = str(DEFAULTS["DEFAULT_DEVICE"])
++TEST_BONAWITZ_THRESHOLD = float(DEFAULTS["TEST_BONAWITZ_THRESHOLD"])
++
+*** End Patch
+*** Begin Patch
+*** Add File: FedGNN_advanced/logger.py
++"""
++logger.py
++
++Simple structured logger wrapper used across the repo.
++Provides secure_log for structured application logging, avoiding accidental secret printing.
++This is intentionally lightweight; replace with your project's logger (structlog, logging + JSON)
++if you have an ops stack.
++"""
++
++import json
++import time
++from typing import Any, Dict, Optional
++
++# NOTE: in production you might route to stdout JSON lines, or to a logging system.
++# secure_log is meant to be safe to call with large objects (it will truncate large bytes)
++_MAX_BYTES_PREVIEW = 256
++
++
++def _sanitize_value(v: Any) -> Any:
++    # sanitize bytes: show hex preview
++    try:
++        if isinstance(v, (bytes, bytearray)):
++            preview = bytes(v[: _MAX_BYTES_PREVIEW]).hex()
++            if len(v) > _MAX_BYTES_PREVIEW:
++                preview = preview + "...(truncated)"
++            return {"__bytes__preview_hex": preview, "length": len(v)}
++        # for dict/list - shallow map
++        if isinstance(v, dict):
++            return {k: _sanitize_value(vv) for k, vv in v.items()}
++        if isinstance(v, list):
++            return [_sanitize_value(x) for x in v]
++        # primitives
++        return v
++    except Exception:
++        return str(v)
++
++
++def secure_log(level: str, msg: str, **kwargs: Any) -> None:
++    """
++    Structured log output in JSON format.
++    Example:
++        secure_log("info", "Round finished", round=1, metrics={"acc":0.9})
++    """
++    out: Dict[str, Any] = {
++        "ts": time.time(),
++        "level": str(level).upper(),
++        "msg": msg,
++        "payload": {},
++    }
++    for k, v in kwargs.items():
++        out["payload"][k] = _sanitize_value(v)
++    print(json.dumps(out, default=str), flush=True)
++
++
++# convenience shorthand
++info = lambda msg, **kw: secure_log("info", msg, **kw)
++warning = lambda msg, **kw: secure_log("warning", msg, **kw)
++error = lambda msg, **kw: secure_log("error", msg, **kw)
++debug = lambda msg, **kw: secure_log("debug", msg, **kw)
++
+*** End Patch
+*** Begin Patch
+*** Add File: FedGNN_advanced/privacy/protocol_messages.py
++"""
++protocol_messages.py
++
++Simple dataclasses used as message shapes between server/client in async simulation.
++These are pure-Python containers and serialized as needed by network layers.
++"""
++
++from dataclasses import dataclass
++from typing import Any, Dict, Tuple, List
++
++
++@dataclass
++class RegisterClient:
++    client_id: str
++    param_shapes: Dict[str, Tuple[int, ...]]
++
++
++@dataclass
++class SharePackage:
++    sender: str
++    recipient: str
++    share: Tuple[int, int]  # (index, share_int)
++
++
++@dataclass
++class MaskedUpdate:
++    sender: str
++    masked_params: Dict[str, Any]  # mapping param name -> numpy array or serializable
++
++
++@dataclass
++class UnmaskRequest:
++    requester: str
++    missing_clients: List[str]
++
++
++@dataclass
++class UnmaskShare:
++    sender: str
++    missing_client: str
++    share: Tuple[int, int]
++
+*** End Patch
+*** Begin Patch
+*** Add File: FedGNN_advanced/privacy/shamir.py
++"""
++shamir.py
++
++Pure-Python Shamir Secret Sharing (byte-oriented wrappers).
++
++Provides:
++- split_secret_bytes(secret: bytes, n: int, t: int) -> List[(index:int, share_int:int)]
++- reconstruct_secret_bytes(pairs: List[(index, share_int)], secret_len: int) -> bytes
++
++Implementation notes:
++- Uses modular arithmetic over a large prime (from constants).
++- All operations use Python big integers (arbitrary precision).
++- This is suitable for experiments and testing. For large-scale production, use optimized native libs.
++"""
++
++from typing import List, Tuple
++from . import protocol_messages  # noqa: F401
++from .. import constants
++import random
++
++
++def _prime() -> int:
++    return int(constants.DEFAULTS.get("SHAMIR_PRIME"))
++
++
++def split_secret_bytes(secret: bytes, n: int, t: int) -> List[Tuple[int, int]]:
++    """
++    Split secret bytes into n shares with threshold t.
++    Returns list of (index, share_int) where index ranges from 1..n
++    """
++    if n < 1 or t < 1 or t > n:
++        raise ValueError("invalid n/t for shamir")
++    p = _prime()
++    secret_int = int.from_bytes(secret, byteorder="big")
++    if secret_int >= p:
++        raise ValueError("secret integer too large for field prime")
++
++    # produce random coefficients a_1..a_{t-1}, a_0 = secret
++    rand = random.SystemRandom()
++    coeffs = [secret_int] + [rand.randint(0, p - 1) for _ in range(t - 1)]
++
++    def eval_poly(x: int) -> int:
++        res = 0
++        # Horner evaluation
++        for a in reversed(coeffs):
++            res = (res * x + a) % p
++        return res
++
++    shares = []
++    for i in range(1, n + 1):
++        y = eval_poly(i)
++        shares.append((i, int(y)))
++    return shares
++
++
++def reconstruct_secret_bytes(pairs: List[Tuple[int, int]], secret_len: int) -> bytes:
++    """
++    Reconstruct secret bytes from at least t pairs using Lagrange interpolation at x=0.
++    pairs: list of (index, share_int)
++    """
++    if not pairs:
++        raise ValueError("no shares provided")
++    p = _prime()
++    xs = [int(x) for x, _ in pairs]
++    ys = [int(y) % p for _, y in pairs]
++    # Lagrange interpolation at 0: secret = sum_j y_j * l_j(0)
++    total = 0
++    for j in range(len(xs)):
++        xj = xs[j]
++        yj = ys[j]
++        num = 1
++        den = 1
++        for m in range(len(xs)):
++            if m == j:
++                continue
++            xm = xs[m]
++            # num *= -xm mod p
++            num = (num * (-xm % p)) % p
++            # den *= (xj - xm) mod p
++            den = (den * ((xj - xm) % p)) % p
++        # modular inverse of den
++        inv_den = pow(den, p - 2, p)
++        lj0 = (num * inv_den) % p
++        total = (total + (yj * lj0) % p) % p
++    sec_int = total % p
++    sec_bytes = sec_int.to_bytes(secret_len, byteorder="big")
++    return sec_bytes
++
+*** End Patch
+*** Begin Patch
+*** Add File: FedGNN_advanced/privacy/mask_manager.py
++"""
++mask_manager.py
++
++Mask derivation utilities: derive pairwise seeds and compute masks for given parameter shapes.
++
++Design:
++- derive_pairwise_seed(own_id, other_id, own_seed): deterministic via HMAC-SHA256
++- compute_mask_from_seed(pair_seed, param_shapes): produce dict param_name -> numpy.ndarray (float32)
++  Serialization convention: big-endian float32 for byte-based mask.
++"""
++
++from typing import Dict, Tuple, Any
++import hmac
++import hashlib
++import numpy as np
++from .. import constants
++
++SEED_BYTE_LEN = int(constants.DEFAULTS.get("SEED_BYTE_LEN"))
++PRG_HASH = str(constants.DEFAULTS.get("PRG_HASH"))
++MASK_SCALE = float(constants.DEFAULTS.get("MASK_SCALE"))
++
++
++def derive_pairwise_seed(own_id: str, other_id: str, own_seed: bytes) -> bytes:
++    """
++    Deterministically derive a pairwise seed from own_seed and client ids.
++    Use HMAC-SHA256: HMAC(key=own_seed, msg=min(id_i,id_j) || max(id_i,id_j))
++    To ensure both parties derive same seed, ordering is canonical by string order.
++    """
++    if not isinstance(own_seed, (bytes, bytearray)):
++        raise ValueError("own_seed must be bytes")
++    a, b = (own_id, other_id) if own_id < other_id else (other_id, own_id)
++    msg = (a + "|" + b).encode("utf-8")
++    h = hmac.new(own_seed, msg, getattr(hashlib, PRG_HASH)).digest()
++    # truncate/expand to SEED_BYTE_LEN
++    if len(h) >= SEED_BYTE_LEN:
++        return h[:SEED_BYTE_LEN]
++    # simple expand by hashing iterations
++    out = bytearray(h)
++    counter = 1
++    while len(out) < SEED_BYTE_LEN:
++        more = hmac.new(own_seed, out + bytes([counter]), getattr(hashlib, PRG_HASH)).digest()
++        out.extend(more)
++        counter += 1
++    return bytes(out[:SEED_BYTE_LEN])
++
++
++def _prg_bytes(seed: bytes, out_len: int) -> bytes:
++    """
++    Simple deterministic PRG using HMAC chaining (HKDF-like expand).
++    Returns out_len bytes.
++    """
++    if not seed or out_len <= 0:
++        return b""
++    hk = hmac.new(seed, b"", getattr(hashlib, PRG_HASH)).digest()
++    out = bytearray()
++    t = b""
++    counter = 1
++    while len(out) < out_len:
++        t = hmac.new(hk, t + bytes([counter]), getattr(hashlib, PRG_HASH)).digest()
++        out.extend(t)
++        counter = (counter + 1) % 256
++    return bytes(out[:out_len])
++
++
++def compute_mask_from_seed(pair_seed: bytes, param_shapes: Dict[str, Tuple[int, ...]]) -> Dict[str, Any]:
++    """
++    Given a pairwise seed (bytes) and param_shapes mapping param->shape tuples,
++    return a mapping param->numpy.ndarray(dtype=float32) mask with the same shape.
++    The mask values are derived by interpreting PRG bytes as big-endian float32 values in [-MASK_SCALE, MASK_SCALE].
++    """
++    masks: Dict[str, Any] = {}
++    for pname, shape in param_shapes.items():
++        n_elems = 1
++        for d in shape:
++            n_elems *= int(d)
++        n_bytes = n_elems * 4  # 4 bytes per float32
++        raw = _prg_bytes(pair_seed + pname.encode("utf-8"), n_bytes)
++        # big-endian float32
++        arr = np.frombuffer(raw, dtype=">f4").astype(np.float32)
++        # map raw float in (-inf, inf) to normalized range [-MASK_SCALE, MASK_SCALE]
++        # The raw bit pattern -> float might produce NaN/inf; so reinterpret through uint32
++        # Safer: interpret as uint32 then normalize to [0,1)
++        uints = np.frombuffer(raw, dtype=">u4").astype(np.uint32)
++        # normalize
++        normed = (uints.astype(np.float64) / (np.float64(2 ** 32)))  # in [0,1)
++        mapped = (normed * 2.0 - 1.0) * MASK_SCALE  # [-MASK_SCALE, MASK_SCALE]
++        masks[pname] = mapped.astype(np.float32).reshape(shape)
++    return masks
++
+*** End Patch
+*** Begin Patch
+*** Add File: FedGNN_advanced/privacy/bonawitz_async.py
++"""
++bonawitz_async.py
++
++Asyncio-based Bonawitz-style secure aggregation protocol (single-process simulation).
++
++This version:
++- Uses constants from FedGNN_advanced.constants
++- Preserves mapping of sender -> received shares so clients can provide unmask shares
++- Works with AsyncClient objects in-process (see demo or tests)
++"""
++
++from typing import Dict, List, Tuple, Any, Optional
++import asyncio
++import numpy as np
++from dataclasses import dataclass
++from . import protocol_messages as msg
++from . import shamir, mask_manager
++from .. import dp_rng, constants, logger
++
++SEED_BYTE_LEN = int(constants.DEFAULTS.get("SEED_BYTE_LEN"))
++DEFAULT_TIMEOUT = float(constants.DEFAULTS.get("DEFAULT_UNMASK_REQUEST_TIMEOUT"))
++SHAMIR_THRESHOLD_FRACTION = float(constants.DEFAULTS.get("SHAMIR_THRESHOLD_FRACTION"))
++
++
++@dataclass
++class ClientHandle:
++    client_id: str
++    inbox: asyncio.Queue
++    param_shapes: Dict[str, Tuple[int, ...]]
++
++
++class AsyncServer:
++    def __init__(self, threshold_fraction: Optional[float] = None):
++        self.clients: Dict[str, ClientHandle] = {}
++        self.param_shapes: Dict[str, Tuple[int, ...]] = {}
++        self.masked_updates: Dict[str, Dict[str, Any]] = {}
++        self._relayed_shares: List[msg.SharePackage] = []
++        self._unmask_shares: List[msg.UnmaskShare] = []
++        self.threshold_fraction = threshold_fraction if threshold_fraction is not None else SHAMIR_THRESHOLD_FRACTION
++        self._lock = asyncio.Lock()
++
++    async def register_client(self, register_msg: msg.RegisterClient, inbox: asyncio.Queue):
++        cid = register_msg.client_id
++        async with self._lock:
++            self.clients[cid] = ClientHandle(client_id=cid, inbox=inbox, param_shapes=register_msg.param_shapes)
++            self.param_shapes = register_msg.param_shapes
++        logger.secure_log("info", f"Registered client {cid}", client_id=cid)
++
++    def active_clients(self) -> List[str]:
++        return list(self.clients.keys())
++
++    def expected_threshold(self) -> int:
++        n = len(self.clients)
++        frac = self.threshold_fraction
++        thr = int(np.ceil(n * float(frac)))
++        return max(1, thr)
++
++    async def relay_share(self, share_pkg: msg.SharePackage):
++        recipient = share_pkg.recipient
++        async with self._lock:
++            if recipient not in self.clients:
++                logger.secure_log("warning", "Relay target unknown", recipient=recipient)
++                return
++            await self.clients[recipient].inbox.put(share_pkg)
++            self._relayed_shares.append(share_pkg)
++        logger.secure_log("debug", "Relayed share", sender=share_pkg.sender, recipient=share_pkg.recipient)
++
++    async def receive_masked_update(self, masked_update: msg.MaskedUpdate):
++        async with self._lock:
++            self.masked_updates[masked_update.sender] = masked_update.masked_params
++        logger.secure_log("info", "Server received masked update", sender=masked_update.sender)
++
++    async def request_unmasking(self, timeout: float = DEFAULT_TIMEOUT):
++        missing = self.missing_clients()
++        if not missing:
++            logger.secure_log("info", "No missing clients; skipping unmask request")
++            return
++        logger.secure_log("info", "Requesting unmask shares", missing_clients=missing)
++        async with self._lock:
++            for cid, handle in self.clients.items():
++                await handle.inbox.put(msg.UnmaskRequest(requester="server", missing_clients=missing))
++        # give clients a chance to respond
++        await asyncio.sleep(0.01)
++
++    async def _collect_unmask_share(self, unmask_share: msg.UnmaskShare):
++        async with self._lock:
++            self._unmask_shares.append(unmask_share)
++        logger.secure_log("debug", "Server collected unmask share", sender=unmask_share.sender, missing_client=unmask_share.missing_client)
++
++    def participants_who_sent(self) -> List[str]:
++        return list(self.masked_updates.keys())
++
++    def missing_clients(self) -> List[str]:
++        return [c for c in self.clients.keys() if c not in self.masked_updates]
++
++    async def reconstruct_missing_seeds(self) -> Dict[str, bytes]:
++        reconstructed = {}
++        shares_by_target: Dict[str, List[Tuple[int, int, str]]] = {}
++        async with self._lock:
++            for us in self._unmask_shares:
++                target = us.missing_client
++                shares_by_target.setdefault(target, []).append((us.share[0], us.share[1], us.sender))
++
++        for target, share_list in shares_by_target.items():
++            thr = self.expected_threshold()
++            if len(share_list) < thr:
++                logger.secure_log("warning", "Not enough shares to reconstruct", target=target, have=len(share_list), need=thr)
++                continue
++            chosen = share_list[:thr]
++            pairs = [(int(x), int(y)) for x, y, _ in [(c[0], c[1], c[2]) for c in chosen]]
++            try:
++                seed_bytes = shamir.reconstruct_secret_bytes(pairs, SEED_BYTE_LEN)
++                reconstructed[target] = seed_bytes
++                logger.secure_log("info", "Reconstructed missing seed", target=target)
++            except Exception as e:
++                logger.secure_log("warning", "Failed to reconstruct seed", target=target, err=str(e))
++                continue
++        return reconstructed
++
++    async def compute_aggregate(self) -> Dict[str, Any]:
++        if not self.masked_updates:
++            raise RuntimeError("No masked updates available")
++
++        param_names = list(next(iter(self.masked_updates.values())).keys())
++        agg = {p: None for p in param_names}
++
++        for sender, params in self.masked_updates.items():
++            for p, arr in params.items():
++                a = np.array(arr, dtype=np.float64)
++                if agg[p] is None:
++                    agg[p] = a.copy()
++                else:
++                    agg[p] += a
++
++        missing = self.missing_clients()
++        reconstructed_seeds = {}
++        if missing:
++            reconstructed_seeds = await self.reconstruct_missing_seeds()
++
++        alive = [c for c in self.clients.keys() if c not in missing]
++        for m in missing:
++            seed_m = reconstructed_seeds.get(m)
++            if seed_m is None:
++                logger.secure_log("warning", "Cannot reconstruct missing client's seed; aggregation may be impossible", missing_client=m)
++                continue
++            for a in alive:
++                pair_seed = mask_manager.derive_pairwise_seed(m, a, seed_m)
++                masks = mask_manager.compute_mask_from_seed(pair_seed, self.param_shapes)
++                for p, arr in masks.items():
++                    if p in agg and agg[p] is not None:
++                        agg[p] -= arr
++
++        final = {p: agg[p].astype(np.float32) for p in param_names}
++        return final
++
+*** End Patch
+*** Begin Patch
+*** Add File: FedGNN_advanced/data_loader.py
++"""
++data_loader.py
++
++Small utility to load common graph datasets (Cora/Citeseer/PubMed) using PyTorch Geometric (PyG).
++If PyG is not installed, raises a helpful error.
++
++Exports:
++- load_pyg_dataset(name: str) -> data object with attributes x, edge_index, y, train_mask/test_mask
++"""
++
++from typing import Any
++from .. import constants, logger
++
++DEFAULT_DEVICE = constants.DEFAULTS.get("DEFAULT_DEVICE", "cpu")
++
++
++def load_pyg_dataset(name: str = "Cora") -> Any:
++    try:
++        import torch_geometric.datasets as datasets
++        from torch_geometric.transforms import NormalizeFeatures
++    except Exception as e:
++        logger.secure_log("error", "PyG not installed; cannot load dataset", err=str(e))
++        raise RuntimeError("Please install torch-geometric to use the data loader: see https://pytorch-geometric.readthedocs.io/") from e
++
++    name_l = name.lower()
++    if name_l == "cora":
++        ds = datasets.Planetoid(root="data/Planetoid", name="Cora", transform=NormalizeFeatures())
++    elif name_l == "citeseer":
++        ds = datasets.Planetoid(root="data/Planetoid", name="Citeseer", transform=NormalizeFeatures())
++    elif name_l == "pubmed":
++        ds = datasets.Planetoid(root="data/Planetoid", name="PubMed", transform=NormalizeFeatures())
++    else:
++        raise ValueError(f"Unknown dataset name: {name}")
++
++    data = ds[0]
++    return data
++
+*** End Patch
+*** Begin Patch
+*** Add File: tests/test_bonawitz_async.py
++import asyncio
++import numpy as np
++import pytest
++from FedGNN_advanced.privacy.bonawitz_async import AsyncServer, AsyncClient
++from FedGNN_advanced import constants
++
++@pytest.mark.asyncio
++async def test_bonawitz_async_all_online_sum_equals_expected():
++    server = AsyncServer(threshold_fraction=float(constants.DEFAULTS.get("TEST_BONAWITZ_THRESHOLD", 0.6)))
++    param_shapes = {"w": (2, 2), "b": (2,)}
++
++    clients = []
++    for i in range(4):
++        cid = f"client_{i}"
++        c = AsyncClient(cid, server, param_shapes)
++        await c.register()
++        clients.append(c)
++
++    for c in clients:
++        await c.prepare_and_send_shares()
++
++    for c in clients:
++        await c.collect_initial_shares(timeout=0.05)
++
++    updates = {}
++    for idx, c in enumerate(clients):
++        upd = {"w": np.ones((2, 2), dtype=np.float32) * (idx + 1), "b": np.ones((2,), dtype=np.float32) * (idx + 1)}
++        updates[c.client_id] = upd
++        await c.send_masked_update(upd)
++
++    agg = await server.compute_aggregate()
++
++    expected = {}
++    for p in updates[clients[0].client_id].keys():
++        s = None
++        for u in updates.values():
++            if s is None:
++                s = np.array(u[p], dtype=np.float64)
++            else:
++                s += np.array(u[p], dtype=np.float64)
++        expected[p] = s.astype(np.float32)
++
++    for k in expected.keys():
++        assert np.allclose(agg[k], expected[k], atol=1e-5)
++
++
++@pytest.mark.asyncio
++async def test_bonawitz_async_with_dropout_and_reconstruction():
++    server = AsyncServer(threshold_fraction=float(constants.DEFAULTS.get("TEST_BONAWITZ_THRESHOLD", 0.6)))
++    param_shapes = {"w": (2, 2), "b": (2,)}
++
++    clients = []
++    for i in range(5):
++        cid = f"client_{i}"
++        c = AsyncClient(cid, server, param_shapes)
++        await c.register()
++        clients.append(c)
++
++    for c in clients:
++        await c.prepare_and_send_shares()
++
++    for c in clients:
++        await c.collect_initial_shares(timeout=0.05)
++
++    for c in clients:
++        if c.client_id == "client_3":
++            c.will_send_masked_update = False
++
++    updates = {}
++    for idx, c in enumerate(clients):
++        upd = {"w": np.ones((2, 2), dtype=np.float32) * (idx + 1), "b": np.ones((2,), dtype=np.float32) * (idx + 1)}
++        updates[c.client_id] = upd
++        await c.send_masked_update(upd)
++
++    missing = server.missing_clients()
++    assert "client_3" in missing
++
++    for c in clients:
++        us = await c.provide_unmask_shares(missing)
++        for item in us:
++            await server._collect_unmask_share(item)
++
++    agg = await server.compute_aggregate()
++
++    expected = None
++    for cid, u in updates.items():
++        if cid == "client_3":
++            continue
++        if expected is None:
++            expected = {p: np.array(v, dtype=np.float64) for p, v in u.items()}
++        else:
++            for p, v in u.items():
++                expected[p] += np.array(v, dtype=np.float64)
++    for p in expected:
++        assert np.allclose(agg[p], expected[p].astype(np.float32), atol=1e-5)
++
+*** End Patch
+*** Begin Patch
+*** Add File: scripts/replace_magic_numbers.py
++#!/usr/bin/env python3
++"""
++scripts/replace_magic_numbers.py
++
++Conservative replacer: replaces specific literal occurrences in specific files
++with expressions that reference FedGNN_advanced.constants.
++
++Usage:
++    python scripts/replace_magic_numbers.py --apply
++    # By default runs in dry-run mode; pass --apply to write changes.
++
++Important:
++    Inspect scripts/magic_map.json before applying.
++"""
++
++import argparse
++import json
++from pathlib import Path
++from typing import Dict, List, Tuple
++import shutil
++import re
++import sys
++
++ROOT = Path(".")
++MAP_PATH = ROOT / "scripts" / "magic_map.json"
++
++def load_map() -> List[Dict]:
++    with open(MAP_PATH, "r", encoding="utf-8") as f:
++        return json.load(f)
++
++def replace_in_file(path: Path, replacements: List[Dict], apply: bool = False) -> Tuple[int, List[Tuple[str,str]]]:
++    txt = path.read_text(encoding="utf-8")
++    original = txt
++    changes = []
++    for rep in replacements:
++        # rep: { "file": "path", "match": "0.01", "replace": "constants.DEFAULTS['DEFAULT_INBOX_DRAIN_TIMEOUT']" }
++        patt = rep["match"]
++        repl = rep["replace"]
++        # use simple string replace for safety but ensure word boundaries where appropriate
++        # try regex with boundaries for numbers: (?<![\w.])<patt>(?![\w.])
++        safe_pat = re.compile(r"(?<![\w.\-])" + re.escape(patt) + r"(?![\w.\-])")
++        new_txt, nsub = safe_pat.subn(repl, txt)
++        if nsub > 0:
++            changes.append( (patt, repl) )
++            txt = new_txt
++    if txt != original:
++        if apply:
++            bak = path.with_suffix(path.suffix + ".bak")
++            shutil.copy(path, bak)
++            path.write_text(txt, encoding="utf-8")
++        return (len(changes), changes)
++    return (0, [])
++
++def main(apply: bool):
++    mapping = load_map()
++    # group by file
++    files_map = {}
++    for rep in mapping:
++        files_map.setdefault(rep["file"], []).append(rep)
++    total_changes = 0
++    for f, reps in files_map.items():
++        path = ROOT / f
++        if not path.exists():
++            print(f"[WARN] file not found: {f}")
++            continue
++        n, changes = replace_in_file(path, reps, apply=apply)
++        if n:
++            total_changes += n
++            print(f"[OK] {f}: {n} replacements -> {changes}")
++    print(f"Total files changed: {total_changes}")
++    if not apply:
++        print("Dry run complete. Rerun with --apply to write changes.")
++    else:
++        print("Applied changes. Review .bak files for backups and run your tests.")
++
++if __name__ == "__main__":
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--apply", action="store_true", help="Apply changes. Default is dry-run.")
++    args = parser.parse_args()
++    main(apply=args.apply)
++
+*** End Patch
+*** Begin Patch
+*** Add File: scripts/magic_map.json
++[
++  {
++    "file": "FedGNN_advanced/server.py",
++    "match": "0.01",
++    "replace": "constants.DEFAULTS['DEFAULT_INBOX_DRAIN_TIMEOUT']"
++  },
++  {
++    "file": "FedGNN_advanced/server.py",
++    "match": "1.0",
++    "replace": "constants.DEFAULTS['DEFAULT_UNMASK_REQUEST_TIMEOUT']"
++  },
++  {
++    "file": "tests/test_bonawitz_async.py",
++    "match": "0.6",
++    "replace": "float(constants.DEFAULTS.get('TEST_BONAWITZ_THRESHOLD', 0.6))"
++  },
++  {
++    "file": "FedGNN_advanced/data_loader.py",
++    "match": "\"cpu\"",
++    "replace": "constants.DEFAULTS['DEFAULT_DEVICE']"
++  }
++]
++
+*** End Patch
+*** End Patch

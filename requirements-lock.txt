@@ -1,0 +1,6 @@
+# Minimal pinned deps (example, please run pip-compile/poetry lock in CI before production)
+numpy==1.25.0
+prometheus-client==0.17.0
+zstandard==0.21.0
+pytest==7.4.0
+safety==1.11.0

@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: decryptor
+spec:
+  selector:
+    app: decryptor
+  ports:
+    - port: 9000
+      targetPort: 9000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: decryptor
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: decryptor
+  template:
+    metadata:
+      labels:
+        app: decryptor
+    spec:
+      containers:
+        - name: decryptor
+          image: registry.example.com/fedgnn/decryptor:latest
+          env:
+            - name: MODE
+              value: "aws_kms"   # or "vault"
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: KMS_SECRET_S3_URI
+              value: "s3://my-bucket/tenseal/context_cipher_b64"
+            - name: VAULT_ADDR
+              value: "https://vault.example.com"
+            - name: VAULT_SECRET_PATH
+              value: "secret/data/tenseal/context"
+            - name: AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: decryptor-auth
+                  key: token
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
